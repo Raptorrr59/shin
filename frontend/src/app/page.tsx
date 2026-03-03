@@ -17,7 +17,7 @@ export default function Home() {
   const [highlightedNodes, setHighlightedNodes] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [provider, setProvider] = useState<string>("openai");
+  const [provider, setProvider] = useState<string>("ollama");
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isChatting, setIsChatting] = useState(false);
@@ -128,8 +128,8 @@ export default function Home() {
             onChange={(e) => setProvider(e.target.value)}
             className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest outline-none cursor-pointer hover:border-slate-700 transition-all"
           >
-            <option value="openai">Provider: OpenAI</option>
             <option value="ollama">Provider: Local (Ollama)</option>
+            <option value="openai">Provider: OpenAI</option>
             <option value="anthropic">Provider: Anthropic</option>
             <option value="google">Provider: Google</option>
           </select>
