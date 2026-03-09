@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useRef } from "react";
 import KnowledgeGraph, { Node, Edge } from "@/components/KnowledgeGraph";
+import HierarchyView from "@/components/HierarchyView";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = "http://localhost:8000";
 
 interface Message {
   role: "user" | "ai";
@@ -11,13 +12,14 @@ interface Message {
 }
 
 export default function Home() {
+  const [view, setView] = useState<"graph" | "tree">("graph");
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [highlightedNodes, setHighlightedNodes] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const [provider, setProvider] = useState<string>("ollama");
+  const [provider, setProvider] = useState<string>("openai");
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isChatting, setIsChatting] = useState(false);
@@ -49,7 +51,7 @@ export default function Home() {
     if (!file) return;
 
     setIsUploading(true);
-    setStatus(`Ingesting ${file.name}...`);
+    setStatus(`Analyzing ${file.name}...`);
 
     const formData = new FormData();
     formData.append("file", file);
@@ -60,7 +62,7 @@ export default function Home() {
         body: formData,
       });
 
-      if (!response.ok) throw new Error("Upload failed");
+      if (!response.ok) throw new Error("Analysis failed");
 
       await fetchGraph();
       setStatus(null);
@@ -69,6 +71,35 @@ export default function Home() {
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const deleteNode = async (nodeId: string) => {
+    if (!confirm("Are you sure you want to delete this node and its connections?")) return;
+    
+    try {
+      const response = await fetch(`${API_URL}/nodes/${nodeId}`, { method: "DELETE" });
+      if (response.ok) {
+        setSelectedNode(null);
+        await fetchGraph();
+      }
+    } catch (error) {
+      console.error("Failed to delete node:", error);
+    }
+  };
+
+  const clearAll = async () => {
+    if (!confirm("WARNING: This will permanently wipe your entire Knowledge Graph and all document embeddings. Continue?")) return;
+    
+    try {
+      const response = await fetch(`${API_URL}/graph`, { method: "DELETE" });
+      if (response.ok) {
+        setSelectedNode(null);
+        setMessages([]);
+        await fetchGraph();
+      }
+    } catch (error) {
+      console.error("Failed to clear graph:", error);
     }
   };
 
@@ -88,13 +119,13 @@ export default function Home() {
         body: JSON.stringify({ message: userMsg, provider }),
       });
 
-      if (!response.ok) throw new Error("Chat failed");
+      if (!response.ok) throw new Error("Interface connection lost");
 
       const data = await response.json();
       setMessages((prev) => [...prev, { role: "ai", content: data.answer }]);
       setHighlightedNodes(data.highlights || []);
     } catch (error: any) {
-      setMessages((prev) => [...prev, { role: "ai", content: `Error: ${error.message}` }]);
+      setMessages((prev) => [...prev, { role: "ai", content: `ERR: ${error.message}` }]);
     } finally {
       setIsChatting(false);
     }
@@ -107,18 +138,42 @@ export default function Home() {
         <div className="p-6 border-b border-slate-800 flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-black tracking-tighter text-blue-500 italic">SHIN (真)</h1>
-            <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Neural Navigator</p>
+            <p className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Knowledge Navigator</p>
           </div>
-          <div className="relative group">
-            <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".txt,.md" />
+          <div className="flex space-x-2">
+            <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".txt,.md,.pdf" />
             <button 
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
               className="p-3 bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 rounded-2xl border border-blue-500/20 transition-all active:scale-95"
+              title="Ingest Documents"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             </button>
+            <button 
+              onClick={clearAll}
+              className="p-3 bg-red-600/10 text-red-500 hover:bg-red-600/20 rounded-2xl border border-red-500/20 transition-all active:scale-95"
+              title="Reset All Knowledge"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+            </button>
           </div>
+        </div>
+
+        {/* View Toggle */}
+        <div className="px-6 py-4 flex space-x-2 border-b border-slate-800 bg-slate-900/10">
+          <button 
+            onClick={() => setView("graph")}
+            className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${view === 'graph' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-900 text-slate-500 hover:bg-slate-800'}`}
+          >
+            Neural Map
+          </button>
+          <button 
+            onClick={() => setView("tree")}
+            className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${view === 'tree' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-900 text-slate-500 hover:bg-slate-800'}`}
+          >
+            Hierarchy
+          </button>
         </div>
 
         {/* AI Provider & Status */}
@@ -128,10 +183,10 @@ export default function Home() {
             onChange={(e) => setProvider(e.target.value)}
             className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest outline-none cursor-pointer hover:border-slate-700 transition-all"
           >
-            <option value="ollama">Provider: Local (Ollama)</option>
-            <option value="openai">Provider: OpenAI</option>
-            <option value="anthropic">Provider: Anthropic</option>
-            <option value="google">Provider: Google</option>
+            <option value="openai">Core: OpenAI (GPT-4o)</option>
+            <option value="ollama">Core: Local (Qwen 2.5)</option>
+            <option value="anthropic">Core: Anthropic (Claude)</option>
+            <option value="google">Core: Google (Gemini)</option>
           </select>
           {status && (
             <div className="text-[10px] font-black uppercase tracking-tighter text-blue-400 animate-pulse">{status}</div>
@@ -145,7 +200,7 @@ export default function Home() {
               <div className="w-12 h-12 rounded-full border-2 border-slate-700 flex items-center justify-center">
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               </div>
-              <p className="text-xs font-black uppercase tracking-widest">Awaiting Interface Query</p>
+              <p className="text-xs font-black uppercase tracking-widest">Awaiting Neural Query</p>
             </div>
           )}
           {messages.map((msg, i) => (
@@ -186,47 +241,71 @@ export default function Home() {
         </div>
       </aside>
 
-      {/* Main Content (Graph) */}
+      {/* Main Content */}
       <section className="flex-1 flex flex-col bg-slate-950 relative overflow-hidden p-6">
         <div className="flex-1 relative">
           {/* Node Details Overlay */}
           {selectedNode && (
-            <div className="absolute top-4 left-4 z-30 w-72 bg-slate-900/90 backdrop-blur-xl border border-slate-700 rounded-3xl p-6 shadow-2xl animate-in fade-in slide-in-from-left-4">
-              <div className="flex justify-between items-start mb-4">
-                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest text-white
-                  ${selectedNode.type === 'Project' ? 'bg-blue-600' : 
-                    selectedNode.type === 'Tech' ? 'bg-green-600' : 
-                    selectedNode.type === 'Person' ? 'bg-purple-600' : 'bg-orange-600'}`}
+            <div className="absolute top-4 left-4 z-30 w-80 bg-slate-900/95 backdrop-blur-2xl border border-slate-700/50 rounded-[2rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.5)] animate-in fade-in slide-in-from-left-4 border-t-blue-500/20">
+              <div className="flex justify-between items-start mb-6">
+                <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] text-white shadow-lg
+                  ${selectedNode.type === 'Project' ? 'bg-blue-600 shadow-blue-900/20' : 
+                    selectedNode.type === 'Tech' ? 'bg-green-600 shadow-green-900/20' : 
+                    selectedNode.type === 'Person' ? 'bg-purple-600 shadow-purple-900/20' : 
+                    selectedNode.type === 'Experience' ? 'bg-emerald-600 shadow-emerald-900/20' : 
+                    selectedNode.type === 'Skill' ? 'bg-cyan-600 shadow-cyan-900/20' : 
+                    selectedNode.type === 'Hobby' ? 'bg-pink-600 shadow-pink-900/20' : 
+                    'bg-orange-600 shadow-orange-900/20'}`}
                 >
                   {selectedNode.type}
                 </span>
-                <button 
-                  onClick={() => setSelectedNode(null)}
-                  className="text-slate-500 hover:text-white transition-colors"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
+                <div className="flex space-x-2">
+                  <button 
+                    onClick={() => deleteNode(selectedNode.id)}
+                    className="text-slate-500 hover:text-red-500 transition-colors p-1"
+                    title="Delete Node"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                  </button>
+                  <button 
+                    onClick={() => setSelectedNode(null)}
+                    className="text-slate-500 hover:text-white transition-colors p-1"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
               </div>
-              <h2 className="text-xl font-bold mb-2">{selectedNode.label}</h2>
-              <p className="text-sm text-slate-400 leading-relaxed italic">
-                {selectedNode.description || "Initializing neural context..."}
-              </p>
+              <h2 className="text-2xl font-black mb-4 tracking-tight">{selectedNode.label}</h2>
+              <div className="space-y-4">
+                <p className="text-sm text-slate-300 leading-relaxed font-medium">
+                  {selectedNode.description || "Synthesizing neural context..."}
+                </p>
+              </div>
             </div>
+          )}
+
+          {/* Visualization Layer */}
+          {view === "graph" ? (
+            <KnowledgeGraph 
+              nodes={nodes} 
+              edges={edges} 
+              highlightedNodes={highlightedNodes} 
+              onNodeClick={(node) => setSelectedNode(node)}
+            />
+          ) : (
+            <HierarchyView 
+              nodes={nodes} 
+              edges={edges} 
+              onNodeClick={(node) => setSelectedNode(node)}
+            />
           )}
 
           {/* Stats Bar */}
           <div className="absolute top-4 right-4 z-10 flex space-x-3 pointer-events-none">
-            <div className="px-4 py-2 bg-slate-900/80 rounded-full text-[10px] font-black uppercase tracking-widest border border-slate-800 shadow-2xl backdrop-blur-md">
-              Nodes: {nodes.length}
+            <div className="px-5 py-2.5 bg-slate-900/80 rounded-full text-[10px] font-black uppercase tracking-[0.2em] border border-slate-800 shadow-2xl backdrop-blur-md">
+              Synapses: {nodes.length}
             </div>
           </div>
-
-          <KnowledgeGraph 
-            nodes={nodes} 
-            edges={edges} 
-            highlightedNodes={highlightedNodes} 
-            onNodeClick={(node) => setSelectedNode(node)}
-          />
         </div>
       </section>
     </main>

@@ -24,11 +24,14 @@ interface KnowledgeGraphProps {
 }
 
 const typeColors: Record<string, string> = {
-  Project: "#3b82f6", // Blue
-  Tech: "#22c55e",    // Green
-  Person: "#a855f7",  // Purple
-  Concept: "#f97316", // Orange
-  default: "#64748b", // Slate
+  Project: "#3b82f6",    // Blue
+  Tech: "#22c55e",       // Green
+  Person: "#a855f7",     // Purple
+  Concept: "#f97316",    // Orange
+  Experience: "#10b981", // Emerald/Teal
+  Skill: "#06b6d4",      // Cyan
+  Hobby: "#ec4899",      // Pink
+  default: "#64748b",    // Slate
 };
 
 const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ 
@@ -50,6 +53,13 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
 
     const g = svg.append("g");
 
+    // Safety Filter: Only keep edges where BOTH source and target exist in the nodes array
+    const validEdges = edges.filter(edge => {
+      const sourceId = typeof edge.source === "string" ? edge.source : (edge.source as any).id;
+      const targetId = typeof edge.target === "string" ? edge.target : (edge.target as any).id;
+      return nodes.some(n => n.id === sourceId) && nodes.some(n => n.id === targetId);
+    });
+
     svg.call(
       d3.zoom<SVGSVGElement, unknown>().on("zoom", (event) => {
         g.attr("transform", event.transform);
@@ -60,9 +70,9 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
       .forceSimulation<Node>(nodes)
       .force(
         "link",
-        d3.forceLink<Node, Edge>(edges).id((d) => d.id).distance(120)
+        d3.forceLink<Node, Edge>(validEdges).id((d) => d.id).distance(140)
       )
-      .force("charge", d3.forceManyBody().strength(-400))
+      .force("charge", d3.forceManyBody().strength(-500))
       .force("center", d3.forceCenter(width / 2, height / 2));
 
     const link = g
@@ -70,9 +80,22 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
       .attr("stroke", "#334155")
       .attr("stroke-opacity", 0.4)
       .selectAll("line")
-      .data(edges)
+      .data(validEdges)
       .join("line")
       .attr("stroke-width", 1.5);
+
+    const edgeLabel = g
+      .append("g")
+      .selectAll("text")
+      .data(validEdges)
+      .join("text")
+      .text((d) => d.label || "")
+      .attr("fill", "#64748b")
+      .attr("font-size", "9px")
+      .attr("font-style", "italic")
+      .attr("text-anchor", "middle")
+      .style("pointer-events", "none")
+      .style("text-shadow", "0 1px 2px rgba(0,0,0,0.8)");
 
     const node = g
       .append("g")
@@ -93,22 +116,22 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
 
     node
       .append("circle")
-      .attr("r", (d) => (highlightedNodes.includes(d.id) ? 14 : 10))
+      .attr("r", (d) => (highlightedNodes.includes(d.id) ? 16 : 12))
       .attr("fill", (d) => typeColors[d.type || "default"] || typeColors.default)
       .attr("stroke", (d) => (highlightedNodes.includes(d.id) ? "#fff" : "transparent"))
-      .attr("stroke-width", 2)
-      .attr("class", (d) => (highlightedNodes.includes(d.id) ? "animate-pulse shadow-xl" : "shadow-md"));
+      .attr("stroke-width", 3)
+      .attr("class", (d) => (highlightedNodes.includes(d.id) ? "animate-pulse shadow-2xl" : "shadow-md hover:brightness-110 transition-all"));
 
     node
       .append("text")
       .text((d) => d.label)
-      .attr("x", 16)
+      .attr("x", 18)
       .attr("y", 4)
-      .attr("fill", "#e2e8f0")
-      .attr("font-size", "12px")
-      .attr("font-weight", "600")
+      .attr("fill", "#f8fafc")
+      .attr("font-size", "13px")
+      .attr("font-weight", "700")
       .style("pointer-events", "none")
-      .style("text-shadow", "0 0 10px rgba(0,0,0,0.8)");
+      .style("text-shadow", "0 2px 4px rgba(0,0,0,0.5)");
 
     simulation.on("tick", () => {
       link
@@ -116,6 +139,10 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
         .attr("y1", (d) => (d.source as Node).y!)
         .attr("x2", (d) => (d.target as Node).x!)
         .attr("y2", (d) => (d.target as Node).y!);
+
+      edgeLabel
+        .attr("x", (d) => ((d.source as Node).x! + (d.target as Node).x!) / 2)
+        .attr("y", (d) => ((d.source as Node).y! + (d.target as Node).y!) / 2 - 4);
 
       node.attr("transform", (d) => `translate(${d.x},${d.y})`);
     });
@@ -143,7 +170,8 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
   }, [nodes, edges, highlightedNodes, onNodeClick]);
 
   return (
-    <div className="w-full h-full bg-slate-950 overflow-hidden relative border border-slate-800 rounded-[2.5rem] shadow-2xl">
+    <div className="w-full h-full bg-slate-950 overflow-hidden relative border border-slate-800 rounded-[3rem] shadow-2xl group">
+      <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-[0.03] pointer-events-none" />
       <svg ref={svgRef} className="w-full h-full" />
     </div>
   );

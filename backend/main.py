@@ -1,11 +1,14 @@
 import os
 import json
-import uuid
+import io
+import shutil
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel as PydanticBaseModel
+from sqlmodel import SQLModel, Field, create_engine, Session, select, delete
 from dotenv import load_dotenv
+from pypdf import PdfReader
 
 # LangChain Providers
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -22,9 +25,46 @@ import uvicorn
 # Load environment variables
 load_dotenv()
 
+# --- Database Setup ---
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://shin_user:shin_password@db:5432/shin_db")
+engine = create_engine(DATABASE_URL)
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+# --- SQLModel Models ---
+class Node(SQLModel, table=True):
+    id: str = Field(primary_key=True)
+    label: str
+    type: str 
+    description: Optional[str] = ""
+
+class Edge(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source: str
+    target: str
+    label: str = ""
+
+# --- Pydantic Models (API) ---
+class KnowledgeGraph(PydanticBaseModel):
+    nodes: List[Node]
+    edges: List[Edge]
+
+class ChatRequest(PydanticBaseModel):
+    message: str
+    provider: str = "openai"
+
+# --- App Setup ---
 app = FastAPI(title="Shin AI Backend")
 
-# Enable CORS for the Next.js frontend
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -33,43 +73,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory graph storage
-graph_data = {
-    "nodes": [],
-    "edges": []
-}
-
 # Persistent Vector Store
 CHROMA_PATH = "chroma_db"
 os.makedirs(CHROMA_PATH, exist_ok=True)
 
-# --- Pydantic Models ---
-class Node(BaseModel):
-    id: str
-    label: str
-    type: str
-    description: Optional[str] = ""
-
-class Edge(BaseModel):
-    source: str
-    target: str
-    label: str = ""
-
-class KnowledgeGraph(BaseModel):
-    nodes: List[Node]
-    edges: List[Edge]
-
-class ChatRequest(BaseModel):
-    message: str
-    provider: str = "openai"
-
-# --- Model & Embedding Factory ---
+# --- AI Model Factory ---
 def get_llm(provider: str):
     if provider == "openai":
         return ChatOpenAI(model="gpt-4o", temperature=0)
     elif provider == "ollama":
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        return ChatOllama(model="qwen2.5:3b", temperature=0, base_url=base_url)
+        return ChatOllama(
+            model="qwen2.5:3b", 
+            temperature=0, 
+            base_url=base_url,
+            timeout=300
+        )
     elif provider == "anthropic":
         return ChatAnthropic(model="claude-3-5-sonnet-20240620", temperature=0)
     elif provider == "google":
@@ -86,116 +105,199 @@ def get_embeddings(provider: str):
         return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     return OpenAIEmbeddings()
 
-# --- Knowledge Extraction Logic ---
+# --- REFINED EXTRACTION PROMPT ---
 extraction_prompt = ChatPromptTemplate.from_template(
-    """You are an expert at extracting knowledge graphs from text. 
-    Format the output as a JSON object with two keys: "nodes" and "edges".
+    """You are a world-class Knowledge Graph extractor specialized in Resumes and CVs.
     
-    Each node must have:
-    - "id": unique string id
-    - "label": name of entity
-    - "type": MUST be one of [Project, Tech, Person, Concept]
-    - "description": a one-sentence summary of what this entity is
+    1. IDENTITY: Identify the candidate's FULL NAME. Node: id="primary-person", type="Person", label=FullName.
+    2. ENTITIES: Extract ALL relevant entities.
+       CRITICAL: The "label" MUST be the specific name of the entity, NEVER the category name.
+       - Experience: Label="Company Name" (e.g. "Google", "Epitech").
+       - Tech: Label="Framework/Language Name" (e.g. "React", "Rust").
+       - Skills: Label="Specific Skill" (e.g. "Distributed Systems", "Graphic Design").
+       - Projects: Label="Project Name" (e.g. "Shin", "Kaze").
+    3. RELATIONSHIPS: Every extracted node MUST have an edge connecting it to "primary-person".
     
-    Each edge must have: "source" (node id), "target" (node id), and "label".
-    
-    Text to analyze:
-    {text}
-    """
-)
-
-# --- Chat Prompt ---
-chat_prompt = ChatPromptTemplate.from_template(
-    """You are the SHIN AI Assistant. You help users navigate their personal knowledge graph.
-    
-    CONTEXT FROM DOCUMENTS:
-    {context}
-    
-    CURRENT KNOWLEDGE GRAPH (Partial):
-    {graph}
-    
-    USER QUESTION:
-    {question}
-    
-    Answer the user's question based on the context. 
-    If you mention entities that are in the knowledge graph, list their IDs in a "highlights" array.
-    
-    Format response as JSON:
+    JSON FORMAT:
     {{
-        "answer": "Your detailed answer...",
-        "highlights": ["node_id_1", "node_id_2"]
+        "nodes": [
+            {{ "id": "unique-slug", "label": "Specific Name", "type": "Project|Tech|Person|Concept|Experience|Skill|Hobby", "description": "Summary" }}
+        ],
+        "edges": [
+            {{ "source": "primary-person", "target": "unique-slug", "label": "has_skill|worked_at|built" }}
+        ]
     }}
+    
+    Text: {text}
+    
+    Output ONLY raw JSON.
     """
 )
 
+chat_prompt = ChatPromptTemplate.from_template(
+    """You are the SHIN AI Assistant. Help users navigate their graph.
+    CONTEXT: {context}
+    GRAPH: {graph}
+    QUESTION: {question}
+    Format response as JSON: {{"answer": "...", "highlights": ["node_id_1"]}}
+    """
+)
+
+# --- Endpoints ---
 @app.get("/")
 async def root():
     return {"status": "online"}
 
 @app.post("/ingest")
-async def ingest_document(file: UploadFile = File(...), provider: str = "openai"):
+async def ingest_document(file: UploadFile = File(...), provider: str = "openai", session: Session = Depends(get_session)):
+    print(f"--- Ingesting: {file.filename} with {provider} ---")
     try:
-        content = await file.read()
-        text = content.decode("utf-8")
+        # 1. Read Content
+        filename = file.filename.lower()
+        if filename.endswith(".pdf"):
+            pdf_content = await file.read()
+            reader = PdfReader(io.BytesIO(pdf_content))
+            text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        else:
+            content = await file.read()
+            text = content.decode("utf-8")
         
+        # 2. Vector Store (RAG)
+        print(f"--- Step 1: Generating Embeddings ---")
         embeddings = get_embeddings(provider)
         vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
-        
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        chunks = text_splitter.split_text(text)
+        chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(text)
+        print(f"Adding {len(chunks)} chunks to vector store...")
         vectorstore.add_texts(texts=chunks, metadatas=[{"source": file.filename}] * len(chunks))
         
+        # Give Ollama a moment to breathe
+        import time
+        if provider == "ollama":
+            print("Cooling down Ollama...")
+            time.sleep(2)
+
+        # 3. AI Extraction
+        print(f"--- Step 2: Extracting Knowledge Graph ---")
         llm = get_llm(provider)
         parser = JsonOutputParser(pydantic_object=KnowledgeGraph)
         chain = extraction_prompt | llm | parser
         
-        extracted_data = chain.invoke({"text": text})
+        raw_extracted = chain.invoke({"text": text})
+        print(f"RAW AI OUTPUT: {json.dumps(raw_extracted, indent=2)}")
         
-        for node in extracted_data.get("nodes", []):
-            if not any(n["id"] == node["id"] for n in graph_data["nodes"]):
-                graph_data["nodes"].append(node)
-            else:
-                # Update description if it was empty before
-                for n in graph_data["nodes"]:
-                    if n["id"] == node["id"] and not n.get("description"):
-                        n["description"] = node.get("description")
-        
-        for edge in extracted_data.get("edges", []):
-            if not any(e["source"] == edge["source"] and e["target"] == edge["target"] for e in graph_data["edges"]):
-                graph_data["edges"].append(edge)
+        # --- ROBUST DATA NORMALIZATION ---
+        if isinstance(raw_extracted, list):
+            nodes_list = [n for n in raw_extracted if isinstance(n, dict) and "label" in n]
+            edges_list = [e for e in raw_extracted if isinstance(e, dict) and "source" in e]
+            extracted_dict = {"nodes": nodes_list, "edges": edges_list}
+        elif isinstance(raw_extracted, dict):
+            extracted_dict = raw_extracted
+        else:
+            extracted_dict = {"nodes": [], "edges": []}
+
+        # 4. Store in DB
+        nodes_added = 0
+        for node_data in extracted_dict.get("nodes", []):
+            if not isinstance(node_data, dict) or "id" not in node_data:
+                continue
                 
-        return {"status": "success", "nodes_added": len(extracted_data.get("nodes", []))}
+            node_id = str(node_data["id"])
+            node_label = str(node_data.get("label", ""))
+            node_type = str(node_data.get("type", "Concept"))
+            
+            # CRITICAL: Prevent merging if label is just the type name (lazy AI)
+            is_generic_label = node_label.lower() == node_type.lower()
+            
+            db_node = session.get(Node, node_id)
+            if not db_node and not is_generic_label:
+                # Only fallback to label-match if the label is actually specific
+                statement = select(Node).where(Node.label == node_label, Node.type == node_type)
+                db_node = session.exec(statement).first()
+            
+            if not db_node:
+                new_node = Node(
+                    id=node_id,
+                    label=node_label,
+                    type=node_type,
+                    description=str(node_data.get("description", ""))
+                )
+                session.add(new_node)
+                nodes_added += 1
+            else:
+                # Update existing node
+                if node_data.get("description") and not db_node.description:
+                    db_node.description = str(node_data["description"])
+                # Ensure edges link to the actual ID in the DB
+                node_data["id"] = db_node.id 
+                session.add(db_node)
+        
+        # Ensure session is flushed so nodes are available for edge verification
+        session.flush()
+
+        for edge_data in extracted_dict.get("edges", []):
+            if not isinstance(edge_data, dict) or "source" not in edge_data or "target" not in edge_data:
+                continue
+            
+            # Verify source and target exist in DB (or were just added)
+            statement = select(Edge).where(Edge.source == edge_data["source"], Edge.target == edge_data["target"])
+            db_edge = session.exec(statement).first()
+            if not db_edge:
+                session.add(Edge(
+                    source=str(edge_data["source"]),
+                    target=str(edge_data["target"]),
+                    label=str(edge_data.get("label", ""))
+                ))
+        
+        session.commit()
+        return {"status": "success", "nodes_added": nodes_added}
     except Exception as e:
         print(f"Ingest Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/graph")
+async def get_graph(session: Session = Depends(get_session)):
+    nodes = session.exec(select(Node)).all()
+    edges = session.exec(select(Edge)).all()
+    return {"nodes": nodes, "edges": edges}
+
+@app.delete("/nodes/{node_id}")
+async def delete_node(node_id: str, session: Session = Depends(get_session)):
+    node = session.get(Node, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    edges_statement = delete(Edge).where((Edge.source == node_id) | (Edge.target == node_id))
+    session.exec(edges_statement)
+    session.delete(node)
+    session.commit()
+    return {"status": "deleted"}
+
+@app.delete("/graph")
+async def clear_graph(session: Session = Depends(get_session)):
+    session.exec(delete(Edge))
+    session.exec(delete(Node))
+    session.commit()
+    if os.path.exists(CHROMA_PATH):
+        shutil.rmtree(CHROMA_PATH)
+        os.makedirs(CHROMA_PATH, exist_ok=True)
+    return {"status": "cleared"}
+
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, session: Session = Depends(get_session)):
     try:
         embeddings = get_embeddings(request.provider)
         vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
         docs = vectorstore.similarity_search(request.message, k=3)
         context = "\n---\n".join([d.page_content for d in docs])
-        
-        graph_summary = json.dumps(graph_data["nodes"][:50])
-        
+        nodes = session.exec(select(Node).limit(50)).all()
+        graph_summary = json.dumps([n.dict() for n in nodes])
         llm = get_llm(request.provider)
         chain = chat_prompt | llm | JsonOutputParser()
-        
-        response = chain.invoke({
-            "context": context,
-            "graph": graph_summary,
-            "question": request.message
-        })
-        
-        return response
+        return chain.invoke({"context": context, "graph": graph_summary, "question": request.message})
     except Exception as e:
         print(f"Chat Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/graph")
-async def get_graph():
-    return graph_data
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
