@@ -84,7 +84,7 @@ def get_llm(provider: str):
     elif provider == "ollama":
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         return ChatOllama(
-            model="qwen2.5:3b", 
+            model="qwen2.5:7b", 
             temperature=0, 
             base_url=base_url,
             timeout=300
@@ -100,7 +100,11 @@ def get_embeddings(provider: str):
         return OpenAIEmbeddings()
     elif provider == "ollama":
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        return OllamaEmbeddings(model="qwen2.5:3b", base_url=base_url)
+        return OllamaEmbeddings(
+            model="nomic-embed-text", 
+            base_url=base_url,
+            client_kwargs={"timeout": 60.0}
+        )
     elif provider == "google":
         return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     return OpenAIEmbeddings()
@@ -109,24 +113,48 @@ def get_embeddings(provider: str):
 extraction_prompt = ChatPromptTemplate.from_template(
     """You are a world-class Knowledge Graph extractor specialized in Resumes and CVs.
     
-    1. IDENTITY: Identify the candidate's FULL NAME. Node: id="primary-person", type="Person", label=FullName.
-    2. ENTITIES: Extract ALL relevant entities.
-       CRITICAL: The "label" MUST be the specific name of the entity, NEVER the category name.
-       - Experience: Label="Company Name" (e.g. "Google", "Epitech").
-       - Tech: Label="Framework/Language Name" (e.g. "React", "Rust").
-       - Skills: Label="Specific Skill" (e.g. "Distributed Systems", "Graphic Design").
-       - Projects: Label="Project Name" (e.g. "Shin", "Kaze").
-    3. RELATIONSHIPS: Every extracted node MUST have an edge connecting it to "primary-person".
+    1. IDENTITY: Identify the candidate's FULL NAME. 
+    2. ENTITIES: Extract ALL relevant entities. Pay special attention to often-missed categories:
+       - Experience: Professional work history. Label = Company Name. Description = Role, Location, Summary.
+       - Education: Academic degrees, schools, and universities. DO NOT put these under Projects. Label = Degree or School.
+       - Projects: Academic, personal, or professional projects. Label = Project Name. Description = Goal or role in project.
+       - Tech: Frameworks, tools, and platforms.
+       - Hard Skill: Technical skills, tools, and programming languages. MUST use type "Hard Skill".
+       - Soft Skill: Interpersonal skills. MUST use type "Soft Skill".
+       - Language: Spoken languages. MUST use type "Language".
+       - Hobby: Personal interests and activities. MUST use type "Hobby".
     
-    JSON FORMAT:
+    JSON FORMAT EXAMPLE:
     {{
         "nodes": [
-            {{ "id": "unique-slug", "label": "Specific Name", "type": "Project|Tech|Person|Concept|Experience|Skill|Hobby", "description": "Summary" }}
+            {{ "id": "candidate", "label": "Full Name Here", "type": "Person", "description": "Candidate Profile" }},
+            {{ "id": "example-hard-skill", "label": "Example Hard Skill", "type": "Hard Skill", "description": "Programming Language" }},
+            {{ "id": "example-soft-skill", "label": "Example Soft Skill", "type": "Soft Skill", "description": "Interpersonal Skill" }},
+            {{ "id": "example-language", "label": "Example Language", "type": "Language", "description": "Fluent" }},
+            {{ "id": "example-hobby", "label": "Example Hobby", "type": "Hobby", "description": "Personal Interest" }},
+            {{ "id": "example-school", "label": "Example University", "type": "Education", "description": "Degree Name" }},
+            {{ "id": "example-company", "label": "Example Company", "type": "Experience", "description": "Job Title, Location. Summary." }},
+            {{ "id": "example-project", "label": "Example Project", "type": "Project", "description": "Project summary." }}
         ],
         "edges": [
-            {{ "source": "primary-person", "target": "unique-slug", "label": "has_skill|worked_at|built" }}
+            {{ "source": "candidate", "target": "example-hard-skill", "label": "has_hard_skill" }},
+            {{ "source": "candidate", "target": "example-soft-skill", "label": "has_soft_skill" }},
+            {{ "source": "candidate", "target": "example-language", "label": "speaks" }},
+            {{ "source": "candidate", "target": "example-hobby", "label": "enjoys" }},
+            {{ "source": "candidate", "target": "example-school", "label": "studied_at" }},
+            {{ "source": "candidate", "target": "example-company", "label": "worked_at" }},
+            {{ "source": "candidate", "target": "example-project", "label": "built_project" }}
         ]
     }}
+    
+    CRITICAL RULES:
+    - The Person node MUST have the id "candidate".
+    - ALL edges must have "source": "candidate".
+    - Distinguish clearly between professional "Experience" (working for a company) and "Project" (building a specific software/tool).
+    - You MUST extract Projects, Hard Skills, Soft Skills, and Hobbies if they exist.
+    - DO NOT hallucinate. Only extract entities that are explicitly written in the text. DO NOT copy the examples.
+    - DO NOT use the generic "Skill" type. You MUST classify as either "Hard Skill" or "Soft Skill".
+    - DO NOT escape characters like dashes (-) or underscores (_) in your JSON values.
     
     Text: {text}
     
@@ -143,10 +171,137 @@ chat_prompt = ChatPromptTemplate.from_template(
     """
 )
 
+class NodeUpdate(PydanticBaseModel):
+    label: Optional[str] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+
+class NodeCreate(PydanticBaseModel):
+    id: str
+    label: str
+    type: str
+    description: Optional[str] = ""
+    connect_to: Optional[str] = "candidate" # Default link to the primary person
+
 # --- Endpoints ---
 @app.get("/")
 async def root():
     return {"status": "online"}
+
+@app.put("/nodes/{node_id}")
+async def update_node(node_id: str, update_data: NodeUpdate, session: Session = Depends(get_session)):
+    node = session.get(Node, node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
+    
+    if update_data.label is not None:
+        node.label = update_data.label
+    if update_data.type is not None:
+        node.type = update_data.type
+    if update_data.description is not None:
+        node.description = update_data.description
+        
+    session.add(node)
+    session.commit()
+    session.refresh(node)
+    return node
+
+@app.post("/nodes")
+async def create_node(node_data: NodeCreate, session: Session = Depends(get_session)):
+    # Create the node
+    db_node = session.get(Node, node_data.id)
+    if db_node:
+        raise HTTPException(status_code=400, detail="Node with this ID already exists")
+        
+    new_node = Node(
+        id=node_data.id,
+        label=node_data.label,
+        type=node_data.type,
+        description=node_data.description
+    )
+    session.add(new_node)
+    
+    # Create the connecting edge
+    if node_data.connect_to:
+        target_node = session.get(Node, node_data.connect_to)
+        if target_node:
+            new_edge = Edge(
+                source=node_data.connect_to,
+                target=new_node.id,
+                label="has_" + node_data.type.lower()
+            )
+            session.add(new_edge)
+            
+    session.commit()
+    return {"status": "success", "node": new_node}
+
+class AIManualNodeRequest(PydanticBaseModel):
+    prompt: str
+    provider: str = "openai"
+
+# --- Prompts ---
+manual_node_prompt = ChatPromptTemplate.from_template(
+    """You are a Knowledge Graph assistant. 
+    The user has given you a brief instruction to add a new entity to their graph.
+    Extract the necessary details to create a single node AND a relevant relationship edge.
+    
+    RULES:
+    - id: A slugified version of the name.
+    - label: The actual name of the entity.
+    - type: Must be one of [Project, Tech, Person, Concept, Experience, Skill, Hobby]. Guess the best fit.
+    - description: A brief summary based on the user's prompt.
+    - edge_label: The relationship between the Candidate and this node (e.g., "has_skill", "built_project", "worked_at", "enjoys").
+    
+    USER PROMPT: {prompt}
+    
+    Output ONLY a raw JSON object:
+    {{
+        "id": "slug-name",
+        "label": "Real Name",
+        "type": "Skill",
+        "description": "Short description",
+        "edge_label": "has_skill"
+    }}
+    """
+)
+
+@app.post("/ai-add-node")
+async def ai_add_node(request: AIManualNodeRequest, session: Session = Depends(get_session)):
+    try:
+        llm = get_llm(request.provider)
+        parser = JsonOutputParser()
+        chain = manual_node_prompt | llm | parser
+        
+        node_data = chain.invoke({"prompt": request.prompt})
+        
+        node_id = str(node_data.get("id"))
+        db_node = session.get(Node, node_id)
+        
+        if db_node:
+             raise HTTPException(status_code=400, detail="Node already exists with this derived ID")
+             
+        new_node = Node(
+            id=node_id,
+            label=str(node_data.get("label", node_id)),
+            type=str(node_data.get("type", "Concept")),
+            description=str(node_data.get("description", ""))
+        )
+        session.add(new_node)
+        
+        # Link to candidate automatically with AI-generated label
+        new_edge = Edge(
+            source="candidate",
+            target=node_id,
+            label=str(node_data.get("edge_label", "is_related_to"))
+        )
+        session.add(new_edge)
+        
+        session.commit()
+        session.refresh(new_node)
+        return {"status": "success", "node": new_node.dict()}
+    except Exception as e:
+        print(f"AI Add Node Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/ingest")
 async def ingest_document(file: UploadFile = File(...), provider: str = "openai", session: Session = Depends(get_session)):
@@ -176,28 +331,67 @@ async def ingest_document(file: UploadFile = File(...), provider: str = "openai"
             print("Cooling down Ollama...")
             time.sleep(2)
 
-        # 3. AI Extraction
-        print(f"--- Step 2: Extracting Knowledge Graph ---")
+        # 3. AI Extraction (Chunked)
+        print(f"--- Step 2: Extracting Knowledge Graph (Chunked) ---")
         llm = get_llm(provider)
-        parser = JsonOutputParser(pydantic_object=KnowledgeGraph)
-        chain = extraction_prompt | llm | parser
         
-        raw_extracted = chain.invoke({"text": text})
-        print(f"RAW AI OUTPUT: {json.dumps(raw_extracted, indent=2)}")
+        # Split text into smaller chunks for extraction
+        extraction_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
+        extraction_chunks = extraction_splitter.split_text(text)
+        print(f"Processing {len(extraction_chunks)} extraction passes...")
         
-        # --- ROBUST DATA NORMALIZATION ---
-        if isinstance(raw_extracted, list):
-            nodes_list = [n for n in raw_extracted if isinstance(n, dict) and "label" in n]
-            edges_list = [e for e in raw_extracted if isinstance(e, dict) and "source" in e]
-            extracted_dict = {"nodes": nodes_list, "edges": edges_list}
-        elif isinstance(raw_extracted, dict):
-            extracted_dict = raw_extracted
-        else:
-            extracted_dict = {"nodes": [], "edges": []}
+        all_extracted_nodes = []
+        all_extracted_edges = []
+        
+        import re
+        
+        for i, chunk in enumerate(extraction_chunks):
+            print(f"Extraction pass {i+1}/{len(extraction_chunks)}...")
+            try:
+                # We use string output to manually parse it and avoid strict Pydantic errors
+                from langchain_core.output_parsers import StrOutputParser
+                chain = extraction_prompt | llm | StrOutputParser()
+                
+                raw_output = chain.invoke({"text": chunk})
+                
+                # Find JSON block in the output
+                json_match = re.search(r'\{.*\}', raw_output.replace('\n', ''), re.DOTALL)
+                if not json_match:
+                    # Try to find it with newlines
+                    json_match = re.search(r'\{[\s\S]*\}', raw_output)
+                    
+                if json_match:
+                    json_str = json_match.group(0)
+                    
+                    # LLMs sometimes incorrectly escape characters in JSON
+                    json_str = json_str.replace(r'\_', '_').replace(r'\-', '-')
+                    # Fix unescaped newlines in strings
+                    json_str = json_str.replace('\n', ' ')
+                    
+                    try:
+                        extracted_dict = json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        print(f"JSON Decode Error on chunk {i+1}: {e}\nRaw String: {json_str}")
+                        continue
+                        
+                    if isinstance(extracted_dict, dict):
+                        all_extracted_nodes.extend(extracted_dict.get("nodes", []))
+                        all_extracted_edges.extend(extracted_dict.get("edges", []))
+                else:
+                    print(f"No JSON found in chunk {i+1} output.")
+                
+                # Small pause between chunks for Ollama
+                if provider == "ollama":
+                    time.sleep(1)
+            except Exception as e:
+                print(f"Extraction chunk {i+1} failed: {e}")
+                continue
 
-        # 4. Store in DB
+        print(f"Extraction complete! Found {len(all_extracted_nodes)} raw nodes.")
+
+        # 4. Store in DB (with deduplication)
         nodes_added = 0
-        for node_data in extracted_dict.get("nodes", []):
+        for node_data in all_extracted_nodes:
             if not isinstance(node_data, dict) or "id" not in node_data:
                 continue
                 
@@ -205,12 +399,11 @@ async def ingest_document(file: UploadFile = File(...), provider: str = "openai"
             node_label = str(node_data.get("label", ""))
             node_type = str(node_data.get("type", "Concept"))
             
-            # CRITICAL: Prevent merging if label is just the type name (lazy AI)
+            # Prevent generic merging
             is_generic_label = node_label.lower() == node_type.lower()
             
             db_node = session.get(Node, node_id)
             if not db_node and not is_generic_label:
-                # Only fallback to label-match if the label is actually specific
                 statement = select(Node).where(Node.label == node_label, Node.type == node_type)
                 db_node = session.exec(statement).first()
             
@@ -224,21 +417,33 @@ async def ingest_document(file: UploadFile = File(...), provider: str = "openai"
                 session.add(new_node)
                 nodes_added += 1
             else:
-                # Update existing node
                 if node_data.get("description") and not db_node.description:
                     db_node.description = str(node_data["description"])
-                # Ensure edges link to the actual ID in the DB
                 node_data["id"] = db_node.id 
+                node_id = db_node.id # Update node_id to the DB's actual ID
                 session.add(db_node)
+
+            # FORCE EDGE CREATION: Make absolutely sure this node is linked to the candidate
+            if node_id != "candidate":
+                statement = select(Edge).where(Edge.source == "candidate", Edge.target == node_id)
+                db_edge = session.exec(statement).first()
+                if not db_edge:
+                    # Find a label if the AI provided one, otherwise guess
+                    found_label = next((e.get("label") for e in all_extracted_edges if isinstance(e, dict) and e.get("target") == node_id), None)
+                    edge_label = str(found_label) if found_label else f"has_{node_type.lower().replace(' ', '_')}"
+                    
+                    session.add(Edge(
+                        source="candidate",
+                        target=node_id,
+                        label=edge_label
+                    ))
         
-        # Ensure session is flushed so nodes are available for edge verification
         session.flush()
 
-        for edge_data in extracted_dict.get("edges", []):
+        for edge_data in all_extracted_edges:
             if not isinstance(edge_data, dict) or "source" not in edge_data or "target" not in edge_data:
                 continue
             
-            # Verify source and target exist in DB (or were just added)
             statement = select(Edge).where(Edge.source == edge_data["source"], Edge.target == edge_data["target"])
             db_edge = session.exec(statement).first()
             if not db_edge:

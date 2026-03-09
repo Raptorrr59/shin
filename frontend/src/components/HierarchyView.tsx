@@ -37,7 +37,11 @@ const HierarchyView: React.FC<HierarchyViewProps> = ({ nodes, edges, onNodeClick
     Person: "text-purple-400",
     Concept: "text-orange-400",
     Experience: "text-emerald-400",
-    Skill: "text-cyan-400",
+    Education: "text-yellow-400",
+    "Hard Skill": "text-cyan-400",
+    "Soft Skill": "text-rose-400",
+    Skill: "text-cyan-400", // Fallback
+    Language: "text-indigo-400",
     Hobby: "text-pink-400",
     default: "text-slate-400",
   };

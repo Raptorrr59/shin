@@ -23,6 +23,8 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isChatting, setIsChatting] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ label: "", description: "", type: "" });
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -34,6 +36,17 @@ export default function Home() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (selectedNode) {
+      setEditForm({
+        label: selectedNode.label || "",
+        description: selectedNode.description || "",
+        type: selectedNode.type || "Concept"
+      });
+      setIsEditing(false);
+    }
+  }, [selectedNode]);
 
   const fetchGraph = async () => {
     try {
@@ -74,6 +87,25 @@ export default function Home() {
     }
   };
 
+  const saveNodeEdit = async () => {
+    if (!selectedNode) return;
+    try {
+      const response = await fetch(`${API_URL}/nodes/${selectedNode.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm),
+      });
+      if (response.ok) {
+        const updatedNode = await response.json();
+        setSelectedNode(updatedNode);
+        setIsEditing(false);
+        await fetchGraph();
+      }
+    } catch (error) {
+      console.error("Failed to update node:", error);
+    }
+  };
+
   const deleteNode = async (nodeId: string) => {
     if (!confirm("Are you sure you want to delete this node and its connections?")) return;
     
@@ -96,6 +128,9 @@ export default function Home() {
       if (response.ok) {
         setSelectedNode(null);
         setMessages([]);
+        setNodes([]);
+        setEdges([]);
+        setHighlightedNodes([]);
         await fetchGraph();
       }
     } catch (error) {
@@ -113,17 +148,32 @@ export default function Home() {
     setIsChatting(true);
 
     try {
-      const response = await fetch(`${API_URL}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg, provider }),
-      });
+      if (userMsg.toLowerCase().startsWith("/add ")) {
+        const prompt = userMsg.substring(5);
+        const response = await fetch(`${API_URL}/ai-add-node`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, provider }),
+        });
 
-      if (!response.ok) throw new Error("Interface connection lost");
+        if (!response.ok) throw new Error("Failed to add node via AI");
 
-      const data = await response.json();
-      setMessages((prev) => [...prev, { role: "ai", content: data.answer }]);
-      setHighlightedNodes(data.highlights || []);
+        const data = await response.json();
+        setMessages((prev) => [...prev, { role: "ai", content: `Neural link established: Node **${data.node.label}** (${data.node.type}) added successfully.` }]);
+        await fetchGraph();
+      } else {
+        const response = await fetch(`${API_URL}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: userMsg, provider }),
+        });
+
+        if (!response.ok) throw new Error("Interface connection lost");
+
+        const data = await response.json();
+        setMessages((prev) => [...prev, { role: "ai", content: data.answer }]);
+        setHighlightedNodes(data.highlights || []);
+      }
     } catch (error: any) {
       setMessages((prev) => [...prev, { role: "ai", content: `ERR: ${error.message}` }]);
     } finally {
@@ -253,13 +303,24 @@ export default function Home() {
                     selectedNode.type === 'Tech' ? 'bg-green-600 shadow-green-900/20' : 
                     selectedNode.type === 'Person' ? 'bg-purple-600 shadow-purple-900/20' : 
                     selectedNode.type === 'Experience' ? 'bg-emerald-600 shadow-emerald-900/20' : 
+                    selectedNode.type === 'Education' ? 'bg-yellow-600 shadow-yellow-900/20' : 
+                    selectedNode.type === 'Hard Skill' ? 'bg-cyan-600 shadow-cyan-900/20' : 
+                    selectedNode.type === 'Soft Skill' ? 'bg-rose-600 shadow-rose-900/20' : 
                     selectedNode.type === 'Skill' ? 'bg-cyan-600 shadow-cyan-900/20' : 
+                    selectedNode.type === 'Language' ? 'bg-indigo-600 shadow-indigo-900/20' : 
                     selectedNode.type === 'Hobby' ? 'bg-pink-600 shadow-pink-900/20' : 
                     'bg-orange-600 shadow-orange-900/20'}`}
                 >
                   {selectedNode.type}
                 </span>
                 <div className="flex space-x-2">
+                  <button 
+                    onClick={() => setIsEditing(!isEditing)}
+                    className={`text-slate-500 hover:text-blue-500 transition-colors p-1 ${isEditing ? 'text-blue-500' : ''}`}
+                    title="Edit Node"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>
+                  </button>
                   <button 
                     onClick={() => deleteNode(selectedNode.id)}
                     className="text-slate-500 hover:text-red-500 transition-colors p-1"
@@ -275,29 +336,86 @@ export default function Home() {
                   </button>
                 </div>
               </div>
-              <h2 className="text-2xl font-black mb-4 tracking-tight">{selectedNode.label}</h2>
-              <div className="space-y-4">
-                <p className="text-sm text-slate-300 leading-relaxed font-medium">
-                  {selectedNode.description || "Synthesizing neural context..."}
-                </p>
-              </div>
+              
+              {isEditing ? (
+                <div className="space-y-4">
+                  <input 
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm text-white font-bold"
+                    value={editForm.label}
+                    onChange={(e) => setEditForm({...editForm, label: e.target.value})}
+                    placeholder="Node Name"
+                  />
+                  <select 
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs text-white"
+                    value={editForm.type}
+                    onChange={(e) => setEditForm({...editForm, type: e.target.value})}
+                  >
+                    <option value="Project">Project</option>
+                    <option value="Tech">Tech</option>
+                    <option value="Experience">Experience</option>
+                    <option value="Skill">Skill</option>
+                    <option value="Hobby">Hobby</option>
+                    <option value="Concept">Concept</option>
+                  </select>
+                  <textarea 
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-xs text-slate-300 min-h-[80px]"
+                    value={editForm.description}
+                    onChange={(e) => setEditForm({...editForm, description: e.target.value})}
+                    placeholder="Node Description..."
+                  />
+                  <button 
+                    onClick={saveNodeEdit}
+                    className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg text-sm transition-all shadow-lg"
+                  >
+                    Save Changes
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <h2 className="text-2xl font-black mb-4 tracking-tight">{selectedNode.label}</h2>
+                  <div className="space-y-4">
+                    <p className="text-sm text-slate-300 leading-relaxed font-medium whitespace-pre-wrap">
+                      {selectedNode.description || "Synthesizing neural context..."}
+                    </p>
+                    {selectedNode.type === 'Experience' && (
+                      <div className="pt-4 border-t border-slate-800">
+                        <p className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-1">Status</p>
+                        <p className="text-xs text-emerald-400 font-bold italic">Verified Professional Entry</p>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
 
           {/* Visualization Layer */}
-          {view === "graph" ? (
-            <KnowledgeGraph 
-              nodes={nodes} 
-              edges={edges} 
-              highlightedNodes={highlightedNodes} 
-              onNodeClick={(node) => setSelectedNode(node)}
-            />
+          {nodes.length > 0 ? (
+            view === "graph" ? (
+              <KnowledgeGraph 
+                nodes={nodes} 
+                edges={edges} 
+                highlightedNodes={highlightedNodes} 
+                onNodeClick={setSelectedNode}
+              />
+            ) : (
+              <HierarchyView 
+                nodes={nodes} 
+                edges={edges} 
+                onNodeClick={setSelectedNode}
+              />
+            )
           ) : (
-            <HierarchyView 
-              nodes={nodes} 
-              edges={edges} 
-              onNodeClick={(node) => setSelectedNode(node)}
-            />
+            <div className="absolute inset-0 flex items-center justify-center text-center p-12">
+               <div className="space-y-4">
+                  <div className="text-slate-700 animate-pulse font-black uppercase tracking-[0.5em] text-sm mb-4">
+                    Waiting for neural input...
+                  </div>
+                  <p className="text-slate-500 text-xs max-w-xs mx-auto">
+                    The network is empty. Upload a document to initialize the graph.
+                  </p>
+               </div>
+            </div>
           )}
 
           {/* Stats Bar */}
