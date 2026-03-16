@@ -117,6 +117,7 @@ extraction_prompt = ChatPromptTemplate.from_template(
        - Person: Individuals.
        - Organization: Companies, institutions, groups.
        - Technology: Software, hardware, tools, frameworks.
+       - Skill: Technical or interpersonal proficiencies (e.g., "Python", "Project Management").
        - Concept: Abstract ideas, theories, fields of study.
        - Project: Specific initiatives or products.
        - Event: Notable occurrences.
@@ -124,7 +125,10 @@ extraction_prompt = ChatPromptTemplate.from_template(
     
     2. PRIMARY SUBJECT: Identify the main entity the text is about (e.g., the name of the person in a CV). Return its ID in the "primary_subject" field of your JSON.
     
-    3. RELATIONSHIPS: Extract the links between these entities. Relationships should be concise (e.g., "works_at", "designed_by", "located_in", "part_of", "uses").
+    3. RELATIONSHIPS: Extract the links between these entities. 
+       - DO NOT just link everything to the primary subject. 
+       - Look for relationships between OTHER entities (e.g., "React" --(is_a)--> "Technology", "Damien" --(works_at)--> "Epitech" --(located_in)--> "Lille").
+       - Relationships should be concise (e.g., "works_at", "uses", "located_in", "part_of", "has_skill", "built").
     
     JSON FORMAT EXAMPLE:
     {{

@@ -26,15 +26,18 @@ interface KnowledgeGraphProps {
 const typeColors: Record<string, string> = {
   Project: "#3b82f6",    // Blue
   Tech: "#22c55e",       // Green
+  Technology: "#22c55e",  // Green
   Person: "#a855f7",     // Purple
   Concept: "#f97316",    // Orange
+  Organization: "#10b981", // Emerald
   Experience: "#10b981", // Emerald/Teal
   Education: "#eab308",  // Yellow/Gold
+  Skill: "#06b6d4",      // Cyan
   "Hard Skill": "#06b6d4", // Cyan
   "Soft Skill": "#f43f5e", // Rose
-  Skill: "#06b6d4",      // Cyan (Fallback)
   Language: "#4f46e5",   // Indigo
   Hobby: "#ec4899",      // Pink
+  Location: "#ef4444",   // Red
   default: "#64748b",    // Slate
 };
 
@@ -56,18 +59,24 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
     // 1. Identify the primary "Person" node (the center)
     const personNode = nodes.find(n => n.type === "Person" || n.id === "candidate");
     
-    // 2. Find all unique types (excluding Cluster type itself)
-    const types = Array.from(new Set(nodes.filter(n => n.id !== personNode?.id).map(n => n.type || "default")));
+    // 2. Find all unique types that have MORE THAN ONE node (to avoid tiny clusters)
+    const allTypes = nodes.filter(n => n.id !== personNode?.id).map(n => n.type || "default");
+    const typeCounts = allTypes.reduce((acc, t) => {
+      acc[t] = (acc[t] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const clusterableTypes = Object.keys(typeCounts).filter(t => typeCounts[t] > 1);
     
-    // 3. Create a "Cluster Hub" node for each type
-    const clusterHubs: Node[] = types.map(type => ({
+    // 3. Create a "Cluster Hub" node for each clusterable type
+    const clusterHubs: Node[] = clusterableTypes.map(type => ({
       id: `cluster-${type}`,
       label: `${type}s`,
       type: "Cluster",
       description: `Group for all ${type} entities`,
       // Distribute hubs in a circle to avoid overlap
-      x: width / 2 + Math.cos(types.indexOf(type) / types.length * 2 * Math.PI) * 200,
-      y: height / 2 + Math.sin(types.indexOf(type) / types.length * 2 * Math.PI) * 200,
+      x: width / 2 + Math.cos(clusterableTypes.indexOf(type) / clusterableTypes.length * 2 * Math.PI) * 200,
+      y: height / 2 + Math.sin(clusterableTypes.indexOf(type) / clusterableTypes.length * 2 * Math.PI) * 200,
     }));
 
     const displayNodes = [...nodes, ...clusterHubs];
@@ -84,15 +93,25 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
       });
     }
 
-    // 5. Link every node to its corresponding Cluster Hub (and filter out direct Person->Node links)
+    // 5. Link every node to its corresponding Cluster Hub IF IT HAS ONE
     nodes.forEach(node => {
       if (node.id === personNode?.id) return;
 
-      displayEdges.push({
-        source: `cluster-${node.type || "default"}`,
-        target: node.id,
-        label: "member_of"
-      });
+      const type = node.type || "default";
+      if (clusterableTypes.includes(type)) {
+        displayEdges.push({
+          source: `cluster-${type}`,
+          target: node.id,
+          label: "member_of"
+        });
+      } else if (personNode) {
+        // If no cluster, link directly to person so it's not an orphan
+        displayEdges.push({
+          source: personNode.id,
+          target: node.id,
+          label: "related_to"
+        });
+      }
     });
 
     // 6. Include original edges ONLY if they are NOT between Person and a node (handled by hubs)
