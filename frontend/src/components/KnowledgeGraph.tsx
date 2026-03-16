@@ -49,77 +49,63 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
   useEffect(() => {
     if (!svgRef.current || nodes.length === 0) return;
 
-    // --- CLUSTERING LOGIC ---
-    // 1. Identify the candidate node
-    const candidateNode = nodes.find((n) => n.id === "candidate" || n.type === "Person");
+    const width = svgRef.current.clientWidth;
+    const height = svgRef.current.clientHeight;
+
+    // --- GENERALIZED CLUSTERING LOGIC ---
+    // 1. Identify the primary "Person" node (the center)
+    const personNode = nodes.find(n => n.type === "Person" || n.id === "candidate");
     
-    let displayNodes = [...nodes];
-    let displayEdges = [...edges];
+    // 2. Find all unique types (excluding Cluster type itself)
+    const types = Array.from(new Set(nodes.filter(n => n.id !== personNode?.id).map(n => n.type || "default")));
+    
+    // 3. Create a "Cluster Hub" node for each type
+    const clusterHubs: Node[] = types.map(type => ({
+      id: `cluster-${type}`,
+      label: `${type}s`,
+      type: "Cluster",
+      description: `Group for all ${type} entities`,
+      // Distribute hubs in a circle to avoid overlap
+      x: width / 2 + Math.cos(types.indexOf(type) / types.length * 2 * Math.PI) * 200,
+      y: height / 2 + Math.sin(types.indexOf(type) / types.length * 2 * Math.PI) * 200,
+    }));
 
-    if (candidateNode) {
-      // 2. Find all unique types (excluding Person/Candidate itself)
-      const types = Array.from(new Set(nodes.filter(n => n.id !== candidateNode.id).map(n => n.type || "default")));
-      
-      // 3. Create a cluster node for each type
-      const clusterNodes: Node[] = types.map(type => ({
-        id: `cluster-${type}`,
-        label: `${type}s`,
-        type: "Cluster", // Special type for rendering
-        description: `Group of all ${type}s`,
-        // Start them slightly offset from center to help physics
-        x: candidateNode.x! + (Math.random() - 0.5) * 50,
-        y: candidateNode.y! + (Math.random() - 0.5) * 50,
-      }));
+    const displayNodes = [...nodes, ...clusterHubs];
+    let displayEdges: Edge[] = [];
 
-      displayNodes = [...nodes, ...clusterNodes];
-
-      // 4. Rewire edges
-      displayEdges = [];
-      
-      // Link candidate to clusters
-      types.forEach(type => {
+    // 4. Link Person to Cluster Hubs
+    if (personNode) {
+      clusterHubs.forEach(hub => {
         displayEdges.push({
-          source: candidateNode.id,
-          target: `cluster-${type}`,
-          label: `has_${type.toLowerCase()}`
+          source: personNode.id,
+          target: hub.id,
+          label: "contains"
         });
-      });
-
-      // Link actual nodes to their respective clusters (or keep original edge if it doesn't involve candidate)
-      edges.forEach(edge => {
-        const sourceId = typeof edge.source === "string" ? edge.source : (edge.source as any).id;
-        const targetId = typeof edge.target === "string" ? edge.target : (edge.target as any).id;
-        
-        if (sourceId === candidateNode.id) {
-          // This edge originally went from Candidate -> Node.
-          // Rewire it to go from Cluster -> Node.
-          const targetNode = nodes.find(n => n.id === targetId);
-          if (targetNode) {
-            displayEdges.push({
-              source: `cluster-${targetNode.type || "default"}`,
-              target: targetId,
-              label: edge.label
-            });
-          }
-        } else if (targetId === candidateNode.id) {
-           // Node -> Candidate (rare but possible)
-           const sourceNode = nodes.find(n => n.id === sourceId);
-           if (sourceNode) {
-            displayEdges.push({
-              source: sourceId,
-              target: `cluster-${sourceNode.type || "default"}`,
-              label: edge.label
-            });
-           }
-        } else {
-          // Edge between two regular nodes (keep as is)
-          displayEdges.push(edge);
-        }
       });
     }
 
-    const width = svgRef.current.clientWidth;
-    const height = svgRef.current.clientHeight;
+    // 5. Link every node to its corresponding Cluster Hub (and filter out direct Person->Node links)
+    nodes.forEach(node => {
+      if (node.id === personNode?.id) return;
+
+      displayEdges.push({
+        source: `cluster-${node.type || "default"}`,
+        target: node.id,
+        label: "member_of"
+      });
+    });
+
+    // 6. Include original edges ONLY if they are NOT between Person and a node (handled by hubs)
+    edges.forEach(edge => {
+      const sourceId = typeof edge.source === "string" ? edge.source : (edge.source as any).id;
+      const targetId = typeof edge.target === "string" ? edge.target : (edge.target as any).id;
+      
+      const involvesPerson = sourceId === personNode?.id || targetId === personNode?.id;
+      
+      if (!involvesPerson) {
+        displayEdges.push(edge);
+      }
+    });
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
@@ -131,7 +117,6 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
       const sourceId = typeof edge.source === "string" ? edge.source : (edge.source as any).id;
       const targetId = typeof edge.target === "string" ? edge.target : (edge.target as any).id;
       
-      // An edge is valid if both its source and target are in the displayNodes array
       return displayNodes.some(n => n.id === sourceId) && displayNodes.some(n => n.id === targetId);
     });
 
@@ -140,49 +125,44 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
         g.attr("transform", event.transform);
       })
     );
-
-    const simulation = d3
-      .forceSimulation<Node>(displayNodes)
-      .force(
-        "link",
-        d3.forceLink<Node, Edge>(validEdges)
-          .id((d) => d.id)
-          .distance((d) => {
-             // Clusters stay closer to the candidate, items spread out further
-             const sourceNode = displayNodes.find(n => n.id === (typeof d.source === 'string' ? d.source : (d.source as any).id));
-             if (sourceNode?.id === candidateNode?.id) return 100;
-             return 160;
-          })
-      )
-      .force("charge", d3.forceManyBody().strength((d) => (d.type === 'Cluster' ? -800 : -400)))
-      .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collide", d3.forceCollide().radius(30));
-
-    const link = g
-      .append("g")
-      .attr("stroke", "#334155")
-      .attr("stroke-opacity", 0.4)
-      .selectAll("line")
-      .data(validEdges)
-      .join("line")
-      .attr("stroke-dasharray", (d) => {
-         const sourceNode = displayNodes.find(n => n.id === (typeof d.source === 'string' ? d.source : (d.source as any).id));
-         return sourceNode?.id === candidateNode?.id ? "5,5" : "none"; // Dashed lines for Candidate->Cluster
+const simulation = d3
+  .forceSimulation<Node>(displayNodes)
+  .force(
+    "link",
+    d3.forceLink<Node, Edge>(validEdges)
+      .id((d) => d.id)
+      .distance((d) => {
+         // Person to Hub: Medium
+         if (d.label === "contains") return 120;
+         // Hub to Node: Short
+         if (d.label === "member_of") return 60;
+         // Semantic Link: Long
+         return 200;
       })
-      .attr("stroke-width", (d) => {
-         const sourceNode = displayNodes.find(n => n.id === (typeof d.source === 'string' ? d.source : (d.source as any).id));
-         return sourceNode?.id === candidateNode?.id ? 2.5 : 1.5; // Thicker lines for Candidate->Cluster
-      });
+  )
+  .force("charge", d3.forceManyBody().strength((d) => (d.type === 'Cluster' ? -1000 : -400)))
+  .force("center", d3.forceCenter(width / 2, height / 2))
+  .force("collide", d3.forceCollide().radius((d) => (d.type === 'Cluster' ? 60 : 40)));
 
-    const edgeLabel = g
-      .append("g")
-      .selectAll("text")
-      .data(validEdges)
-      .join("text")
-      .text((d) => d.label || "")
-      .attr("fill", "#64748b")
-      .attr("font-size", "9px")
-      .attr("font-style", "italic")
+const link = g
+  .append("g")
+  .attr("stroke", "#475569")
+  .attr("stroke-opacity", 0.6)
+  .selectAll("line")
+  .data(validEdges)
+  .join("line")
+  .attr("stroke-dasharray", (d) => (d.label === "member_of" || d.label === "contains") ? "5,5" : "none")
+  .attr("stroke-width", (d) => d.label === "contains" ? 2.5 : (d.label === "member_of" ? 1 : 2));
+
+const edgeLabel = g
+  .append("g")
+  .selectAll("text")
+  .data(validEdges)
+  .join("text")
+  .text((d) => (d.label === "member_of" || d.label === "contains") ? "" : (d.label || ""))
+
+      .attr("fill", "#94a3b8")
+      .attr("font-size", "10px")
       .attr("text-anchor", "middle")
       .style("pointer-events", "none")
       .style("text-shadow", "0 1px 2px rgba(0,0,0,0.8)");
@@ -194,7 +174,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
       .join("g")
       .attr("class", "cursor-pointer")
       .on("click", (event, d) => {
-        if (d.type !== "Cluster" && onNodeClick) onNodeClick(d);
+        if (onNodeClick) onNodeClick(d);
       })
       .call(
         d3
@@ -207,9 +187,8 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
     node
       .append("circle")
       .attr("r", (d) => {
-        if (d.type === "Cluster") return 8;
-        if (d.id === candidateNode?.id) return 20;
-        return highlightedNodes.includes(d.id) ? 16 : 12;
+        if (d.type === "Cluster") return 10;
+        return highlightedNodes.includes(d.id) ? 18 : 14;
       })
       .attr("fill", (d) => {
         if (d.type === "Cluster") return "transparent";
@@ -222,27 +201,18 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
       .attr("stroke-width", (d) => d.type === "Cluster" ? 2 : 3)
       .attr("class", (d) => {
         if (d.type === "Cluster") return "";
-        return highlightedNodes.includes(d.id) ? "animate-pulse shadow-2xl" : "shadow-md hover:brightness-110 transition-all";
+        return highlightedNodes.includes(d.id) ? "animate-pulse" : "hover:brightness-110 transition-all";
       });
 
     node
       .append("text")
       .text((d) => d.label)
-      .attr("x", (d) => {
-         if (d.id === candidateNode?.id) return 26;
-         if (d.type === "Cluster") return 12;
-         return 18;
-      })
+      .attr("x", (d) => d.type === "Cluster" ? 14 : 20)
       .attr("y", 4)
-      .attr("fill", (d) => d.type === "Cluster" ? "#cbd5e1" : "#f8fafc")
-      .attr("font-size", (d) => {
-        if (d.id === candidateNode?.id) return "16px";
-        if (d.type === "Cluster") return "10px";
-        return "13px";
-      })
+      .attr("fill", (d) => d.type === "Cluster" ? "#64748b" : "#f8fafc")
+      .attr("font-size", (d) => d.type === "Cluster" ? "11px" : "14px")
       .attr("font-weight", (d) => d.type === "Cluster" ? "500" : "700")
       .attr("text-transform", (d) => d.type === "Cluster" ? "uppercase" : "none")
-      .attr("letter-spacing", (d) => d.type === "Cluster" ? "0.1em" : "normal")
       .style("pointer-events", "none")
       .style("text-shadow", "0 2px 4px rgba(0,0,0,0.5)");
 
@@ -255,7 +225,7 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
 
       edgeLabel
         .attr("x", (d) => ((d.source as Node).x! + (d.target as Node).x!) / 2)
-        .attr("y", (d) => ((d.source as Node).y! + (d.target as Node).y!) / 2 - 4);
+        .attr("y", (d) => ((d.source as Node).y! + (d.target as Node).y!) / 2 - 5);
 
       node.attr("transform", (d) => `translate(${d.x},${d.y})`);
     });

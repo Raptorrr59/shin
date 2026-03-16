@@ -111,50 +111,41 @@ def get_embeddings(provider: str):
 
 # --- REFINED EXTRACTION PROMPT ---
 extraction_prompt = ChatPromptTemplate.from_template(
-    """You are a world-class Knowledge Graph extractor specialized in Resumes and CVs.
+    """You are a world-class Knowledge Graph extractor. Your goal is to identify key entities and the semantic relationships between them from the provided text.
     
-    1. IDENTITY: Identify the candidate's FULL NAME. 
-    2. ENTITIES: Extract ALL relevant entities. Pay special attention to often-missed categories:
-       - Experience: Professional work history. Label = Company Name. Description = Role, Location, Summary.
-       - Education: Academic degrees, schools, and universities. DO NOT put these under Projects. Label = Degree or School.
-       - Projects: Academic, personal, or professional projects. Label = Project Name. Description = Goal or role in project.
-       - Tech: Frameworks, tools, and platforms.
-       - Hard Skill: Technical skills, tools, and programming languages. MUST use type "Hard Skill".
-       - Soft Skill: Interpersonal skills. MUST use type "Soft Skill".
-       - Language: Spoken languages. MUST use type "Language".
-       - Hobby: Personal interests and activities. MUST use type "Hobby".
+    1. ENTITIES: Extract all significant entities. Categorize them into one of these types:
+       - Person: Individuals.
+       - Organization: Companies, institutions, groups.
+       - Technology: Software, hardware, tools, frameworks.
+       - Concept: Abstract ideas, theories, fields of study.
+       - Project: Specific initiatives or products.
+       - Event: Notable occurrences.
+       - Location: Geographic places or offices.
+    
+    2. PRIMARY SUBJECT: Identify the main entity the text is about (e.g., the name of the person in a CV). Return its ID in the "primary_subject" field of your JSON.
+    
+    3. RELATIONSHIPS: Extract the links between these entities. Relationships should be concise (e.g., "works_at", "designed_by", "located_in", "part_of", "uses").
     
     JSON FORMAT EXAMPLE:
     {{
+        "primary_subject": "entity-id-1",
         "nodes": [
-            {{ "id": "candidate", "label": "Full Name Here", "type": "Person", "description": "Candidate Profile" }},
-            {{ "id": "example-hard-skill", "label": "Example Hard Skill", "type": "Hard Skill", "description": "Programming Language" }},
-            {{ "id": "example-soft-skill", "label": "Example Soft Skill", "type": "Soft Skill", "description": "Interpersonal Skill" }},
-            {{ "id": "example-language", "label": "Example Language", "type": "Language", "description": "Fluent" }},
-            {{ "id": "example-hobby", "label": "Example Hobby", "type": "Hobby", "description": "Personal Interest" }},
-            {{ "id": "example-school", "label": "Example University", "type": "Education", "description": "Degree Name" }},
-            {{ "id": "example-company", "label": "Example Company", "type": "Experience", "description": "Job Title, Location. Summary." }},
-            {{ "id": "example-project", "label": "Example Project", "type": "Project", "description": "Project summary." }}
+            {{ "id": "entity-id-1", "label": "Entity Name", "type": "Person", "description": "Brief description" }},
+            {{ "id": "entity-id-2", "label": "Another Entity", "type": "Organization", "description": "Another description" }}
         ],
         "edges": [
-            {{ "source": "candidate", "target": "example-hard-skill", "label": "has_hard_skill" }},
-            {{ "source": "candidate", "target": "example-soft-skill", "label": "has_soft_skill" }},
-            {{ "source": "candidate", "target": "example-language", "label": "speaks" }},
-            {{ "source": "candidate", "target": "example-hobby", "label": "enjoys" }},
-            {{ "source": "candidate", "target": "example-school", "label": "studied_at" }},
-            {{ "source": "candidate", "target": "example-company", "label": "worked_at" }},
-            {{ "source": "candidate", "target": "example-project", "label": "built_project" }}
+            {{ "source": "entity-id-1", "target": "entity-id-2", "label": "relationship_label" }}
         ]
     }}
     
     CRITICAL RULES:
-    - The Person node MUST have the id "candidate".
-    - ALL edges must have "source": "candidate".
-    - Distinguish clearly between professional "Experience" (working for a company) and "Project" (building a specific software/tool).
-    - You MUST extract Projects, Hard Skills, Soft Skills, and Hobbies if they exist.
-    - DO NOT hallucinate. Only extract entities that are explicitly written in the text. DO NOT copy the examples.
-    - DO NOT use the generic "Skill" type. You MUST classify as either "Hard Skill" or "Soft Skill".
-    - DO NOT escape characters like dashes (-) or underscores (_) in your JSON values.
+    - The "id" MUST be a unique, slugified version of the label (e.g., "slugified-name").
+    - DO NOT invent, guess, or hallucinate names. Only extract names exactly as they appear in the text.
+    - If a name is only a single word (like a company "Leclerc"), do NOT add a first name to it (e.g., do not turn "Leclerc" into "Luc Leclerc").
+    - Distinguish between a "Person" (an individual) and an "Organization" (a company or institution).
+    - Extract AS MANY relevant relationships as possible from the text.
+    - DO NOT hallucinate. Only extract entities and links explicitly mentioned.
+    - Output ONLY raw JSON.
     
     Text: {text}
     
@@ -163,9 +154,9 @@ extraction_prompt = ChatPromptTemplate.from_template(
 )
 
 chat_prompt = ChatPromptTemplate.from_template(
-    """You are the SHIN AI Assistant. Help users navigate their graph.
-    CONTEXT: {context}
-    GRAPH: {graph}
+    """You are the SHIN AI Assistant. Help users navigate their knowledge graph.
+    CONTEXT: {context} (Relevant document snippets)
+    GRAPH: {graph} (Relevant entities and relationships)
     QUESTION: {question}
     Format response as JSON: {{"answer": "...", "highlights": ["node_id_1"]}}
     """
@@ -181,7 +172,7 @@ class NodeCreate(PydanticBaseModel):
     label: str
     type: str
     description: Optional[str] = ""
-    connect_to: Optional[str] = "candidate" # Default link to the primary person
+    connect_to: Optional[str] = None # No longer defaulting to 'candidate'
 
 # --- Endpoints ---
 @app.get("/")
@@ -321,7 +312,7 @@ async def ingest_document(file: UploadFile = File(...), provider: str = "openai"
         print(f"--- Step 1: Generating Embeddings ---")
         embeddings = get_embeddings(provider)
         vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
-        chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(text)
+        chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_text(text)
         print(f"Adding {len(chunks)} chunks to vector store...")
         vectorstore.add_texts(texts=chunks, metadatas=[{"source": file.filename}] * len(chunks))
         
@@ -342,6 +333,7 @@ async def ingest_document(file: UploadFile = File(...), provider: str = "openai"
         
         all_extracted_nodes = []
         all_extracted_edges = []
+        primary_subjects = []
         
         import re
         
@@ -375,8 +367,34 @@ async def ingest_document(file: UploadFile = File(...), provider: str = "openai"
                         continue
                         
                     if isinstance(extracted_dict, dict):
-                        all_extracted_nodes.extend(extracted_dict.get("nodes", []))
-                        all_extracted_edges.extend(extracted_dict.get("edges", []))
+                        nodes = extracted_dict.get("nodes", [])
+                        edges = extracted_dict.get("edges", [])
+                        primary_subject = extracted_dict.get("primary_subject")
+                        
+                        all_extracted_nodes.extend(nodes)
+                        all_extracted_edges.extend(edges)
+                        
+                        if primary_subject:
+                            primary_subjects.append(primary_subject)
+                            
+                            # Heuristic: Link orphan nodes in this chunk to the primary subject
+                            # orphan = not a source or target in any extracted edge from this chunk
+                            edge_node_ids = set()
+                            for e in edges:
+                                if isinstance(e, dict):
+                                    edge_node_ids.add(str(e.get("source")))
+                                    edge_node_ids.add(str(e.get("target")))
+                            
+                            for n in nodes:
+                                if isinstance(n, dict) and "id" in n:
+                                    node_id = str(n["id"])
+                                    if node_id != primary_subject and node_id not in edge_node_ids:
+                                        all_extracted_edges.append({
+                                            "source": primary_subject,
+                                            "target": node_id,
+                                            "label": "related_to"
+                                        })
+
                 else:
                     print(f"No JSON found in chunk {i+1} output.")
                 
@@ -419,39 +437,31 @@ async def ingest_document(file: UploadFile = File(...), provider: str = "openai"
             else:
                 if node_data.get("description") and not db_node.description:
                     db_node.description = str(node_data["description"])
-                node_data["id"] = db_node.id 
-                node_id = db_node.id # Update node_id to the DB's actual ID
                 session.add(db_node)
-
-            # FORCE EDGE CREATION: Make absolutely sure this node is linked to the candidate
-            if node_id != "candidate":
-                statement = select(Edge).where(Edge.source == "candidate", Edge.target == node_id)
-                db_edge = session.exec(statement).first()
-                if not db_edge:
-                    # Find a label if the AI provided one, otherwise guess
-                    found_label = next((e.get("label") for e in all_extracted_edges if isinstance(e, dict) and e.get("target") == node_id), None)
-                    edge_label = str(found_label) if found_label else f"has_{node_type.lower().replace(' ', '_')}"
-                    
-                    session.add(Edge(
-                        source="candidate",
-                        target=node_id,
-                        label=edge_label
-                    ))
         
         session.flush()
 
+        # 5. Store Edges (extracted relationships only)
         for edge_data in all_extracted_edges:
             if not isinstance(edge_data, dict) or "source" not in edge_data or "target" not in edge_data:
                 continue
             
-            statement = select(Edge).where(Edge.source == edge_data["source"], Edge.target == edge_data["target"])
-            db_edge = session.exec(statement).first()
-            if not db_edge:
-                session.add(Edge(
-                    source=str(edge_data["source"]),
-                    target=str(edge_data["target"]),
-                    label=str(edge_data.get("label", ""))
-                ))
+            source_id = str(edge_data["source"])
+            target_id = str(edge_data["target"])
+            
+            # Ensure both nodes exist before creating an edge
+            source_exists = session.get(Node, source_id)
+            target_exists = session.get(Node, target_id)
+            
+            if source_exists and target_exists:
+                statement = select(Edge).where(Edge.source == source_id, Edge.target == target_id)
+                db_edge = session.exec(statement).first()
+                if not db_edge:
+                    session.add(Edge(
+                        source=source_id,
+                        target=target_id,
+                        label=str(edge_data.get("label", ""))
+                    ))
         
         session.commit()
         return {"status": "success", "nodes_added": nodes_added}
@@ -493,15 +503,46 @@ async def chat(request: ChatRequest, session: Session = Depends(get_session)):
     try:
         embeddings = get_embeddings(request.provider)
         vectorstore = Chroma(persist_directory=CHROMA_PATH, embedding_function=embeddings)
+        
+        # 1. Vector Search for Semantic Context
         docs = vectorstore.similarity_search(request.message, k=3)
         context = "\n---\n".join([d.page_content for d in docs])
-        nodes = session.exec(select(Node).limit(50)).all()
-        graph_summary = json.dumps([n.dict() for n in nodes])
+        
+        # 2. Graph Search for Relational Context
+        # We look for nodes mentioned in the user's query or in the top-k document chunks
+        all_nodes = session.exec(select(Node)).all()
+        relevant_node_ids = []
+        
+        # Simple heuristic: look for node labels in the message and snippets
+        combined_text = (request.message + " " + context).lower()
+        for node in all_nodes:
+            if node.label.lower() in combined_text:
+                relevant_node_ids.append(node.id)
+        
+        # Fetch 1-hop neighborhood for these relevant nodes
+        relevant_edges = []
+        if relevant_node_ids:
+            statement = select(Edge).where((Edge.source.in_(relevant_node_ids)) | (Edge.target.in_(relevant_node_ids)))
+            relevant_edges = session.exec(statement).all()
+        
+        # Build a concise graph summary for the LLM
+        graph_triplets = []
+        for edge in relevant_edges:
+            graph_triplets.append(f"{edge.source} --({edge.label})--> {edge.target}")
+        
+        graph_summary = "\n".join(graph_triplets[:20]) # Limit to top 20 triplets to save tokens
+        
         llm = get_llm(request.provider)
         chain = chat_prompt | llm | JsonOutputParser()
-        return chain.invoke({"context": context, "graph": graph_summary, "question": request.message})
+        return chain.invoke({
+            "context": context, 
+            "graph": graph_summary if graph_summary else "No relevant graph relationships found.", 
+            "question": request.message
+        })
     except Exception as e:
         print(f"Chat Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
