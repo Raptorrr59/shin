@@ -17,9 +17,10 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - DATABASE_URL=postgresql://shin_user:shin_password@db:5432/shin_db
+    env_file:
+      - ./backend/.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
