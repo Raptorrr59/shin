@@ -101,6 +101,24 @@ class Edge(SQLModel, table=True):
     label: str = ""
     description: Optional[str] = ""
 
+class Document(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    filename: str = Field(index=True)
+    user_id: int = Field(index=True)
+    upload_date: datetime = Field(default_factory=datetime.utcnow)
+
+class NodeProvenance(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    node_id: str = Field(index=True)
+    doc_id: int = Field(index=True)
+    user_id: int = Field(index=True)
+
+class EdgeProvenance(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    edge_id: int = Field(index=True)
+    doc_id: int = Field(index=True)
+    user_id: int = Field(index=True)
+
 # --- Pydantic Models (API) ---
 class UserCreate(PydanticBaseModel):
     username: str
@@ -491,6 +509,36 @@ async def ai_add_node(request: AIManualNodeRequest, session: Session = Depends(g
         logger.error(f"AI Add Node Error: {e}")
         raise HTTPException(status_code=500, detail="AI node creation failed")
 
+async def delete_document_internal(doc_id: int, session: Session, current_user: User):
+    doc = session.get(Document, doc_id)
+    if not doc or doc.user_id != current_user.id:
+        return False
+    
+    # 1. Delete from ChromaDB
+    USER_CHROMA_PATH = f"chroma_db/user_{current_user.id}"
+    if os.path.exists(USER_CHROMA_PATH):
+        embeddings = get_embeddings("openai") # Provider doesn't strictly matter for deletion filter
+        vectorstore = Chroma(persist_directory=USER_CHROMA_PATH, embedding_function=embeddings)
+        vectorstore.delete(where={"source": doc.filename})
+    
+    # 2. Delete Provenance
+    session.exec(delete(NodeProvenance).where(NodeProvenance.doc_id == doc_id, NodeProvenance.user_id == current_user.id))
+    session.exec(delete(EdgeProvenance).where(EdgeProvenance.doc_id == doc_id, EdgeProvenance.user_id == current_user.id))
+    
+    # 3. Prune Orphans
+    # Delete nodes that have no more provenance
+    subquery_nodes = select(NodeProvenance.node_id).where(NodeProvenance.user_id == current_user.id)
+    session.exec(delete(Node).where(Node.user_id == current_user.id, Node.id.not_in(subquery_nodes)))
+    
+    # Delete edges that have no more provenance
+    subquery_edges = select(EdgeProvenance.edge_id).where(EdgeProvenance.user_id == current_user.id)
+    session.exec(delete(Edge).where(Edge.user_id == current_user.id, Edge.id.not_in(subquery_edges)))
+    
+    # 4. Delete Document record
+    session.delete(doc)
+    session.commit()
+    return True
+
 @app.post("/ingest")
 async def ingest_document(
     file: UploadFile = File(...), 
@@ -501,10 +549,22 @@ async def ingest_document(
     filename = sanitize_filename(file.filename)
     await manager.send_personal_message({"type": "status", "message": f"Initializing neural link for {filename}..."}, current_user.id)
     
+    # Handle Refresh: Delete existing doc if it exists
+    existing_doc = session.exec(select(Document).where(Document.filename == filename, Document.user_id == current_user.id)).first()
+    if existing_doc:
+        await delete_document_internal(existing_doc.id, session, current_user)
+    
+    # Create new Document record
+    db_doc = Document(filename=filename, user_id=current_user.id)
+    session.add(db_doc)
+    session.commit()
+    session.refresh(db_doc)
+    
     USER_CHROMA_PATH = f"chroma_db/user_{current_user.id}"
     os.makedirs(USER_CHROMA_PATH, exist_ok=True)
     
     try:
+        # ... (rest of ingestion logic remains similar, but need to add provenance)
         file_ext = filename.split(".")[-1].lower()
         if file_ext == "pdf":
             documents = get_text_from_pdf(await file.read())
@@ -562,10 +622,14 @@ async def ingest_document(
             
             db_node = session.exec(select(Node).where(Node.id == node_id, Node.user_id == current_user.id)).first()
             if not db_node:
-                session.add(Node(id=node_id, user_id=current_user.id, label=str(node_data.get("label", "")), type=str(node_data.get("type", "Concept")), description=str(node_data.get("description", ""))))
+                db_node = Node(id=node_id, user_id=current_user.id, label=str(node_data.get("label", "")), type=str(node_data.get("type", "Concept")), description=str(node_data.get("description", "")))
+                session.add(db_node)
                 nodes_added += 1
             elif len(str(node_data.get("description", ""))) > len(str(db_node.description)):
                 db_node.description = str(node_data["description"])
+            
+            # Save Node Provenance
+            session.add(NodeProvenance(node_id=node_id, doc_id=db_doc.id!, user_id=current_user.id))
         
         session.flush()
         processed_edge_keys = set()
@@ -575,8 +639,14 @@ async def ingest_document(
             if key in processed_edge_keys: continue
             processed_edge_keys.add(key)
             if session.get(Node, s) and session.get(Node, t):
-                if not session.exec(select(Edge).where(Edge.source == s, Edge.target == t, Edge.label == l, Edge.user_id == current_user.id)).first():
-                    session.add(Edge(user_id=current_user.id, source=s, target=t, label=l, description=d))
+                db_edge = session.exec(select(Edge).where(Edge.source == s, Edge.target == t, Edge.label == l, Edge.user_id == current_user.id)).first()
+                if not db_edge:
+                    db_edge = Edge(user_id=current_user.id, source=s, target=t, label=l, description=d)
+                    session.add(db_edge)
+                    session.flush() # Get ID
+                
+                # Save Edge Provenance
+                session.add(EdgeProvenance(edge_id=db_edge.id!, doc_id=db_doc.id!, user_id=current_user.id))
         
         session.commit()
         await manager.send_personal_message({"type": "update", "message": "Graph updated successfully.", "nodes_added": nodes_added}, current_user.id)
@@ -585,6 +655,18 @@ async def ingest_document(
         logger.error(f"Ingest Error: {e}", exc_info=True)
         await manager.send_personal_message({"type": "error", "message": f"Neural link failed: {str(e)}"}, current_user.id)
         raise HTTPException(status_code=500, detail="Ingestion failed.")
+
+@app.get("/documents")
+async def get_documents(session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    docs = session.exec(select(Document).where(Document.user_id == current_user.id).order_by(Document.upload_date.desc())).all()
+    return docs
+
+@app.delete("/documents/{doc_id}")
+async def delete_document(doc_id: int, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):
+    success = await delete_document_internal(doc_id, session, current_user)
+    if not success:
+        raise HTTPException(status_code=404, detail="Document not found or access denied")
+    return {"status": "deleted"}
 
 @app.post("/chat")
 async def chat(request: ChatRequest, session: Session = Depends(get_session), current_user: User = Depends(get_current_user)):

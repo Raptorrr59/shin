@@ -3,7 +3,21 @@
 import { useState, useEffect, useRef } from "react";
 import KnowledgeGraph, { Node, Edge } from "@/components/KnowledgeGraph";
 import HierarchyView from "@/components/HierarchyView";
+import DocumentLibrary from "@/components/DocumentLibrary";
 import { useAuthStore } from "@/store/useAuthStore";
+import { 
+  MessageSquare, 
+  Library, 
+  Database, 
+  Trash2, 
+  Send, 
+  FileUp, 
+  LogOut, 
+  Network, 
+  Share2,
+  Cpu,
+  Fingerprint
+} from "lucide-react";
 
 const API_URL = "http://localhost:8000";
 
@@ -21,6 +35,7 @@ interface Message {
 
 export default function Home() {
   const { token, user, setAuth, logout, isAuthenticated } = useAuthStore();
+  const [activeTab, setActiveTab] = useState<"chat" | "library">("chat");
   const [view, setView] = useState<"graph" | "tree">("graph");
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -240,7 +255,7 @@ export default function Home() {
             ) : part
           ))}
         </div>
-        {msg.suggestions && msg.suggestions.length > 0 && (
+        {msg.suggestions && msg.suggestions.length > 0 && (activeTab === 'chat') && (
           <div className="pt-4 border-t border-slate-800 space-y-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Neural Expansion Proposals</p>
             {msg.suggestions.map((s, si) => (
@@ -277,7 +292,6 @@ export default function Home() {
               {isRegistering ? "Initialize New Operator" : "Knowledge Navigator"}
             </p>
           </div>
-          
           <form onSubmit={handleAuth} className="space-y-4">
             <div className="space-y-1">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-4">Identifier</label>
@@ -287,14 +301,12 @@ export default function Home() {
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-4">Access Key</label>
               <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-5 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500/20 transition-all" required />
             </div>
-            
             {isRegistering && (
               <div className="space-y-1 animate-in fade-in slide-in-from-top-2">
                 <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-4">Verify Key</label>
                 <input type="password" placeholder="••••••••" className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-5 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500/20 transition-all" required />
               </div>
             )}
-
             {authError && <p className="text-[10px] text-red-500 font-black uppercase text-center">{authError}</p>}
             <button type="submit" className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-black uppercase tracking-widest rounded-2xl transition-all shadow-xl shadow-blue-900/20 active:scale-95">
               {isRegistering ? "Authorize Operator" : "Establish Link"}
@@ -313,45 +325,84 @@ export default function Home() {
           <div><h1 className="text-2xl font-black tracking-tighter text-blue-500 italic">SHIN (真)</h1><p className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Knowledge Navigator</p></div>
           <div className="flex space-x-2">
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".txt,.md,.pdf" />
-            <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="p-3 bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 rounded-2xl border border-blue-500/20 transition-all active:scale-95"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>
-            <button onClick={async () => { if (confirm("Wipe graph?")) { await fetch(`${API_URL}/graph`, { method: "DELETE", headers: { "Authorization": `Bearer ${token}` } }); fetchGraph(); } }} className="p-3 bg-red-600/10 text-red-500 hover:bg-red-600/20 rounded-2xl border border-red-500/20 transition-all active:scale-95"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>
+            <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="p-3 bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 rounded-2xl border border-blue-500/20 transition-all active:scale-95" title="Ingest Documents"><FileUp size={20} /></button>
+            <button onClick={async () => { if (confirm("Wipe graph?")) { await fetch(`${API_URL}/graph`, { method: "DELETE", headers: { "Authorization": `Bearer ${token}` } }); fetchGraph(); } }} className="p-3 bg-red-600/10 text-red-500 hover:bg-red-600/20 rounded-2xl border border-red-500/20 transition-all active:scale-95" title="Wipe Data"><Trash2 size={20} /></button>
           </div>
         </div>
+
         <div className="px-6 py-4 flex items-center justify-between border-b border-slate-800 bg-slate-900/20">
            <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-[10px] font-black uppercase">{user?.username.substring(0, 2)}</div>
+              <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-[10px] font-black uppercase shadow-lg shadow-blue-900/20">
+                <Fingerprint size={14} />
+              </div>
               <div><p className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Operator</p><p className="text-xs font-bold text-slate-200">{user?.username}</p></div>
            </div>
-           <button onClick={logout} className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-red-500 transition-colors">Disconnect</button>
+           <button onClick={logout} className="p-2 text-slate-500 hover:text-red-500 transition-colors"><LogOut size={16} /></button>
         </div>
+
+        {/* Navigation Tabs */}
         <div className="px-6 py-4 flex space-x-2 border-b border-slate-800 bg-slate-900/10">
-          <button onClick={() => setView("graph")} className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${view === 'graph' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-900 text-slate-500 hover:bg-slate-800'}`}>Neural Map</button>
-          <button onClick={() => setView("tree")} className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${view === 'tree' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-900 text-slate-500 hover:bg-slate-800'}`}>Hierarchy</button>
+          <button 
+            onClick={() => setActiveTab("chat")} 
+            className={`flex-1 flex items-center justify-center space-x-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-900 text-slate-500 hover:bg-slate-800'}`}
+          >
+            <MessageSquare size={14} />
+            <span>Terminal</span>
+          </button>
+          <button 
+            onClick={() => setActiveTab("library")} 
+            className={`flex-1 flex items-center justify-center space-x-2 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'library' ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' : 'bg-slate-900 text-slate-500 hover:bg-slate-800'}`}
+          >
+            <Library size={14} />
+            <span>Archive</span>
+          </button>
         </div>
+
+        {/* View Toggle (Only in Terminal) */}
+        {activeTab === 'chat' && (
+          <div className="px-6 py-4 flex space-x-2 border-b border-slate-800 bg-slate-900/10">
+            <button onClick={() => setView("graph")} className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${view === 'graph' ? 'bg-slate-800 text-blue-400 border border-blue-500/30' : 'bg-slate-900 text-slate-600'}`}>Map</button>
+            <button onClick={() => setView("tree")} className={`flex-1 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${view === 'tree' ? 'bg-slate-800 text-blue-400 border border-blue-500/30' : 'bg-slate-900 text-slate-600'}`}>Tree</button>
+          </div>
+        )}
+
         <div className="px-6 py-4 space-y-3 bg-slate-900/20 border-b border-slate-800">
+          <div className="flex items-center space-x-2 mb-1">
+            <Cpu size={12} className="text-blue-500" />
+            <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Neural Engine</span>
+          </div>
           <select value={provider} onChange={(e) => setProvider(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-xs font-black uppercase tracking-widest outline-none cursor-pointer hover:border-slate-700 transition-all">
-            <option value="openai">Core: OpenAI (GPT-4o)</option><option value="ollama">Core: Local (Qwen 2.5)</option><option value="anthropic">Core: Anthropic (Claude)</option><option value="google">Core: Google (Gemini)</option>
+            <option value="openai">OpenAI GPT-4o</option><option value="ollama">Local Qwen 2.5</option><option value="anthropic">Claude 3.5 Sonnet</option><option value="google">Gemini 1.5 Pro</option>
           </select>
           {status && <div className="text-[10px] font-black uppercase tracking-tighter text-blue-400 animate-pulse">{status}</div>}
         </div>
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
-          {messages.length === 0 && <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-30"><div className="w-12 h-12 rounded-full border-2 border-slate-700 flex items-center justify-center"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><p className="text-xs font-black uppercase tracking-widest">Awaiting Neural Query</p></div>}
-          {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[85%] p-4 rounded-2xl text-sm leading-relaxed shadow-xl ${msg.role === "user" ? "bg-blue-600 text-white rounded-tr-none font-medium" : "bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none"}`}>
-                {renderMessageContent(msg, i)}
-              </div>
+
+        {/* Conditional Content */}
+        {activeTab === "chat" ? (
+          <>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+              {messages.length === 0 && <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-30"><div className="w-12 h-12 rounded-full border-2 border-slate-700 flex items-center justify-center"><MessageSquare size={24} /></div><p className="text-xs font-black uppercase tracking-widest">Awaiting Neural Query</p></div>}
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[85%] p-4 rounded-2xl text-sm leading-relaxed shadow-xl ${msg.role === "user" ? "bg-blue-600 text-white rounded-tr-none font-medium" : "bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none"}`}>
+                    {renderMessageContent(msg, i)}
+                  </div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
             </div>
-          ))}
-          <div ref={chatEndRef} />
-        </div>
-        <div className="p-6 border-t border-slate-800">
-          <form onSubmit={handleSendMessage} className="relative">
-            <input value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} placeholder="Query the map..." className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-4 pr-12 py-4 text-sm font-medium focus:ring-2 focus:ring-blue-500/20 outline-none transition-all placeholder:text-slate-600" />
-            <button type="submit" disabled={isChatting || !inputMessage.trim()} className="absolute right-2 top-2 bottom-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white rounded-xl transition-all active:scale-95">{isChatting ? <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>}</button>
-          </form>
-        </div>
+            <div className="p-6 border-t border-slate-800">
+              <form onSubmit={handleSendMessage} className="relative">
+                <input value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} placeholder="Query the map..." className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-4 pr-12 py-4 text-sm font-medium focus:ring-2 focus:ring-blue-500/20 outline-none transition-all placeholder:text-slate-600" />
+                <button type="submit" disabled={isChatting || !inputMessage.trim()} className="absolute right-2 top-2 bottom-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white rounded-xl transition-all active:scale-95">{isChatting ? <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Send size={18} />}</button>
+              </form>
+            </div>
+          </>
+        ) : (
+          <DocumentLibrary onRefreshGraph={fetchGraph} />
+        )}
       </aside>
+
       <section className="flex-1 flex flex-col bg-slate-950 relative overflow-hidden p-6">
         <div className="flex-1 relative">
           {selectedNode && (
@@ -359,9 +410,9 @@ export default function Home() {
               <div className="flex justify-between items-start mb-6">
                 <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-[0.2em] text-white shadow-lg ${selectedNode.type === 'Project' ? 'bg-blue-600 shadow-blue-900/20' : selectedNode.type === 'Tech' ? 'bg-green-600 shadow-green-900/20' : selectedNode.type === 'Person' ? 'bg-purple-600 shadow-purple-900/20' : 'bg-orange-600 shadow-orange-900/20'}`}>{selectedNode.type}</span>
                 <div className="flex space-x-2">
-                  <button onClick={() => setIsEditing(!isEditing)} className={`text-slate-500 hover:text-blue-500 transition-colors p-1 ${isEditing ? 'text-blue-500' : ''}`}><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></button>
-                  <button onClick={() => deleteNode(selectedNode.id)} className="text-slate-500 hover:text-red-500 transition-colors p-1"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
-                  <button onClick={() => setSelectedNode(null)} className="text-slate-500 hover:text-white transition-colors p-1"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                  <button onClick={() => setIsEditing(!isEditing)} className={`text-slate-500 hover:text-blue-500 transition-colors p-1 ${isEditing ? 'text-blue-500' : ''}`}><Network size={18} /></button>
+                  <button onClick={() => deleteNode(selectedNode.id)} className="text-slate-500 hover:text-red-500 transition-colors p-1"><Trash2 size={18} /></button>
+                  <button onClick={() => setSelectedNode(null)} className="text-slate-500 hover:text-white transition-colors p-1"><Share2 size={18} /></button>
                 </div>
               </div>
               {isEditing ? (

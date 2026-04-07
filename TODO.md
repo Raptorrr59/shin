@@ -32,6 +32,7 @@
     - [x] **Insecure Data Handling:** Each user now has their own isolated ChromaDB instance and SQL records. ✅
     - [x] **Access Control:** Upgraded from simple API Key to secure JWT-based authorization. ✅
 - [ ] **Automated Security Scan:** Run `/security:analyze` to catch common vulnerabilities and misconfigurations.
+- [x] **Advanced Document Management:** Implemented a full 'Neural Archive' library view with managed provenance and automatic orphan pruning on deletion. ✅
 - [x] **Performance Benchmarking:** Optimized the D3 simulation with alphaDecay and tick-limits for 500+ nodes to ensure high performance. ✅
 - [x] **Deployment Strategy:** Containerize the full stack using `docker-compose.yml` for easy one-command setup. ✅
 
