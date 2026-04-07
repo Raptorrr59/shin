@@ -1,24 +1,28 @@
 services:
   db:
     image: postgres:15-alpine
+    restart: always
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
-      - POSTGRES_USER=shin_user
-      - POSTGRES_PASSWORD=shin_password
-      - POSTGRES_DB=shin_db
+      - POSTGRES_USER=${DB_USER:-shin_user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-shin_password}
+      - POSTGRES_DB=${DB_NAME:-shin_db}
     ports:
       - "5432:5432"
 
   backend:
     build: ./backend
+    restart: always
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - chroma_data:/app/chroma_db
     environment:
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - DATABASE_URL=postgresql://shin_user:shin_password@db:5432/shin_db
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - DATABASE_URL=postgresql://${DB_USER:-shin_user}:${DB_PASSWORD:-shin_password}@db:5432/${DB_NAME:-shin_db}
+      - SHIN_SECRET_KEY=${SHIN_SECRET_KEY}
     env_file:
       - ./backend/.env
     extra_hosts:
@@ -29,14 +33,16 @@ services:
 
   frontend:
     build: ./frontend
+    restart: always
     ports:
       - "3000:3000"
     volumes:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     command: npm run dev
 
 volumes:
   postgres_data:
+  chroma_data:
