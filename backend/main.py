@@ -629,8 +629,8 @@ async def ingest_document(
                 db_node.description = str(node_data["description"])
             
             # Save Node Provenance
-            session.add(NodeProvenance(node_id=node_id, doc_id=db_doc.id!, user_id=current_user.id))
-        
+            session.add(NodeProvenance(node_id=node_id, doc_id=db_doc.id, user_id=current_user.id))
+
         session.flush()
         processed_edge_keys = set()
         for edge_data in all_edges:
@@ -644,9 +644,9 @@ async def ingest_document(
                     db_edge = Edge(user_id=current_user.id, source=s, target=t, label=l, description=d)
                     session.add(db_edge)
                     session.flush() # Get ID
-                
+
                 # Save Edge Provenance
-                session.add(EdgeProvenance(edge_id=db_edge.id!, doc_id=db_doc.id!, user_id=current_user.id))
+                session.add(EdgeProvenance(edge_id=db_edge.id, doc_id=db_doc.id, user_id=current_user.id))
         
         session.commit()
         await manager.send_personal_message({"type": "update", "message": "Graph updated successfully.", "nodes_added": nodes_added}, current_user.id)
